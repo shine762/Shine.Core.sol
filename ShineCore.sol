@@ -27,6 +27,7 @@ contract ShineCore {
     }
 
     IERC20 public usdtToken;
+    IERC20 public shineToken;
     uint256 public lastUserId = 1;
     address public rootOwner;
     address public tradingVault;
@@ -44,13 +45,14 @@ contract ShineCore {
     event Distribution(address indexed user, uint256 tradingAmt, uint256 ownerAmt, uint256 up1, uint256 up2, uint256 up3);
     event ProfitDistributed(address indexed user, uint256 userAmt, uint256 uplineAmt, uint256 ownerAmt, uint256 airdropAmt, uint256 charityAmt);
 
-    constructor(address _usdtToken) {
-        usdtToken = IERC20(_usdtToken);
-        rootOwner = msg.sender;
-        tradingVault = msg.sender;
-        feeWallet = msg.sender;
-        airdropWallet = msg.sender;
-        charityWallet = msg.sender;
+    constructor() {
+        usdtToken = IERC20(0x8Db81B051c65A7a7D539e896BdA7e4D792461DCF);
+        shineToken = IERC20(0xa0399e5D113525d2C435519050A5EFDeE93Cbd94);
+        tradingVault = 0x204e8c521aCa3621DB585829667759433aBb70d3;
+        rootOwner = 0x99b23c8039E98a119eaed74e4F3FE5d68fF1abbA;
+        feeWallet = 0x99b23c8039E98a119eaed74e4F3FE5d68fF1abbA;
+        airdropWallet = 0xE5afe2967d5B00e8DAe7aaf8b536F7b408622Ed7;
+        charityWallet = 0xa748027Ac30F83794d227AcB315FD90361a8F536;
 
         User storage root = users[rootOwner];
         root.id = 1;
@@ -66,15 +68,18 @@ contract ShineCore {
         }
     }
 
-    function register(address _upline) external {
+    function register(address _upline) external payable {
         require(!users[msg.sender].isRegistered, "Registered");
         require(_upline != msg.sender, "Self upline");
         require(users[_upline].isRegistered, "Invalid upline");
 
         uint256 cost = getLevelCost(1, 0);
-        uint256 fee = getServiceFee(1);
-        usdtToken.transferFrom(msg.sender, address(this), cost + fee);
-        usdtToken.transfer(feeWallet, fee);
+        require(usdtToken.transferFrom(msg.sender, address(this), cost), "USDT transfer failed");
+
+        if (msg.value > 0) {
+            (bool success, ) = feeWallet.call{value: msg.value}("");
+            require(success, "BNB transfer failed");
+        }
 
         lastUserId++;
         User storage u = users[msg.sender];
@@ -91,9 +96,10 @@ contract ShineCore {
 
         distributeFunds(cost, msg.sender, 1, 0);
         updateMatrix(msg.sender, _upline, 1, 0);
+        sendAirdropTokens(msg.sender, cost);
     }
 
-    function buyLevel(uint8 _program, uint8 _level) external {
+    function buyLevel(uint8 _program, uint8 _level) external payable {
         require(_program >= 1 && _program <= 15, "Invalid program");
         require(_level < 12, "Invalid level");
         require(users[msg.sender].isRegistered, "Register first");
@@ -104,9 +110,13 @@ contract ShineCore {
         }
 
         uint256 cost = getLevelCost(_program, _level);
-        uint256 fee = getServiceFee(_program);
-        usdtToken.transferFrom(msg.sender, address(this), cost + fee);
-        usdtToken.transfer(feeWallet, fee);
+        require(usdtToken.transferFrom(msg.sender, address(this), cost), "USDT transfer failed");
+
+        if (msg.value > 0) {
+            (bool success, ) = feeWallet.call{value: msg.value}("");
+            require(success, "BNB transfer failed");
+        }
+
         users[msg.sender].activeLevels[_program][_level] = true;
 
         if (_level > 0 && users[msg.sender].matrices[_program][_level - 1].blocked) {
@@ -118,6 +128,7 @@ contract ShineCore {
         distributeFunds(cost, msg.sender, _program, _level);
         address freeReferrer = findFreeReferrer(msg.sender, _program, _level);
         updateMatrix(msg.sender, freeReferrer, _program, _level);
+        sendAirdropTokens(msg.sender, cost);
     }
 
     function updateMatrix(address _user, address _referrer, uint8 _program, uint8 _level) internal {
@@ -186,21 +197,25 @@ contract ShineCore {
 
     function getServiceFee(uint8 _program) public pure returns (uint256) {
         require(_program >= 1 && _program <= 15, "Invalid program");
-        if (_program == 1) return 1 ether;
-        if (_program == 2) return 2 ether;
-        if (_program == 3) return 3 ether;
-        if (_program == 4) return 4 ether;
-        if (_program == 5) return 5 ether;
-        if (_program == 6) return 6 ether;
-        if (_program == 7) return 7 ether;
-        if (_program == 8) return 8 ether;
-        if (_program == 9) return 9 ether;
-        if (_program == 10) return 10 ether;
-        if (_program == 11) return 11 ether;
-        if (_program == 12) return 12 ether;
-        if (_program == 13) return 14 ether;
-        if (_program == 14) return 16 ether;
-        return 18 ether;
+        return 0;
+    }
+
+    function sendAirdropTokens(address _recipient, uint256 _amount) internal {
+        if (address(shineToken) != address(0)) {
+            uint256 contractBal = shineToken.balanceOf(address(this));
+            if (contractBal >= _amount) {
+                shineToken.transfer(_recipient, _amount);
+            } else if (contractBal > 0) {
+                shineToken.transfer(_recipient, contractBal);
+            } else if (airdropWallet != address(0)) {
+                try shineToken.transferFrom(airdropWallet, _recipient, _amount) {} catch {}
+            }
+        }
+    }
+
+    function setShineToken(address _shineToken) external {
+        require(msg.sender == rootOwner, "Only owner");
+        shineToken = IERC20(_shineToken);
     }
 
     function distributeFunds(uint256 _cost, address _user, uint8 _program, uint8 _level) internal {
@@ -211,31 +226,31 @@ contract ShineCore {
         uint256 up2Amt = (_cost * 3) / 100;
         uint256 up3Amt = (_cost * 2) / 100;
 
-        usdtToken.transfer(tradingVault, tradingAmt);
+        require(usdtToken.transfer(tradingVault, tradingAmt), "Transfer failed");
 
         address up1 = users[_user].upline;
         address up2 = up1 != address(0) ? users[up1].upline : address(0);
         address up3 = up2 != address(0) ? users[up2].upline : address(0);
 
         if (up1 != address(0) && users[up1].activeLevels[_program][_level] && !users[up1].matrices[_program][_level].blocked) {
-            usdtToken.transfer(up1, up1Amt);
+            require(usdtToken.transfer(up1, up1Amt), "Transfer failed");
         } else {
             ownerAmt += up1Amt;
         }
 
         if (up2 != address(0) && users[up2].activeLevels[_program][_level] && !users[up2].matrices[_program][_level].blocked) {
-            usdtToken.transfer(up2, up2Amt);
+            require(usdtToken.transfer(up2, up2Amt), "Transfer failed");
         } else {
             ownerAmt += up2Amt;
         }
 
         if (up3 != address(0) && users[up3].activeLevels[_program][_level] && !users[up3].matrices[_program][_level].blocked) {
-            usdtToken.transfer(up3, up3Amt);
+            require(usdtToken.transfer(up3, up3Amt), "Transfer failed");
         } else {
             ownerAmt += up3Amt;
         }
 
-        usdtToken.transfer(rootOwner, ownerAmt);
+        require(usdtToken.transfer(rootOwner, ownerAmt), "Transfer failed");
 
         emit Distribution(_user, tradingAmt, ownerAmt, up1Amt, up2Amt, up3Amt);
     }
@@ -245,7 +260,7 @@ contract ShineCore {
         require(users[_user].isRegistered, "User not registered");
         require(_profitAmount > 0, "Zero profit");
 
-        usdtToken.transferFrom(msg.sender, address(this), _profitAmount);
+        require(usdtToken.transferFrom(msg.sender, address(this), _profitAmount), "TransferFrom failed");
 
         uint256 userAmt = (_profitAmount * 80) / 100;
         uint256 ownerAmt = (_profitAmount * 5) / 100;
@@ -253,18 +268,18 @@ contract ShineCore {
         uint256 airdropAmt = (_profitAmount * 5) / 100;
         uint256 charityAmt = (_profitAmount * 5) / 100;
 
-        usdtToken.transfer(_user, userAmt);
+        require(usdtToken.transfer(_user, userAmt), "User transfer failed");
 
         address up1 = users[_user].upline;
         if (up1 != address(0)) {
-            usdtToken.transfer(up1, uplineAmt);
+            require(usdtToken.transfer(up1, uplineAmt), "Upline transfer failed");
         } else {
             ownerAmt += uplineAmt;
         }
 
-        usdtToken.transfer(rootOwner, ownerAmt);
-        usdtToken.transfer(airdropWallet, airdropAmt);
-        usdtToken.transfer(charityWallet, charityAmt);
+        require(usdtToken.transfer(rootOwner, ownerAmt), "Owner transfer failed");
+        require(usdtToken.transfer(airdropWallet, airdropAmt), "Airdrop transfer failed");
+        require(usdtToken.transfer(charityWallet, charityAmt), "Charity transfer failed");
 
         emit ProfitDistributed(_user, userAmt, uplineAmt, ownerAmt, airdropAmt, charityAmt);
     }
