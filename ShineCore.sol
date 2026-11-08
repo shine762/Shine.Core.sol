@@ -68,15 +68,27 @@ contract ShineCore {
         }
     }
 
+    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+        (bool success, bytes memory data) = address(token).call(abi.encodeWithSelector(token.transfer.selector, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TF");
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+        (bool success, bytes memory data) = address(token).call(abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TFF");
+    }
+
     function register(address _upline) external payable {
         require(!users[msg.sender].isRegistered, "Registered");
         require(_upline != msg.sender, "Self upline");
-        require(users[_upline].isRegistered, "Invalid upline");
+        if (_upline == address(0) || !users[_upline].isRegistered) {
+            _upline = rootOwner;
+        }
 
         uint256 cost = getLevelCost(1, 0);
-        require(usdtToken.transferFrom(msg.sender, address(this), cost), "USDT transfer failed");
+        safeTransferFrom(usdtToken, msg.sender, address(this), cost);
 
-        if (msg.value > 0) {
+        if (msg.value > 0 && feeWallet != address(0)) {
             (bool success, ) = feeWallet.call{value: msg.value}("");
             require(success, "BNB transfer failed");
         }
@@ -201,21 +213,27 @@ contract ShineCore {
     }
 
     function sendAirdropTokens(address _recipient, uint256 _amount) internal {
-        if (address(shineToken) != address(0)) {
-            uint256 contractBal = shineToken.balanceOf(address(this));
-            if (contractBal >= _amount) {
-                shineToken.transfer(_recipient, _amount);
-            } else if (contractBal > 0) {
-                shineToken.transfer(_recipient, contractBal);
-            } else if (airdropWallet != address(0)) {
-                try shineToken.transferFrom(airdropWallet, _recipient, _amount) {} catch {}
-            }
+        if (address(shineToken) != address(0) && address(shineToken).code.length > 0) {
+            try shineToken.balanceOf(address(this)) returns (uint256 contractBal) {
+                if (contractBal >= _amount) {
+                    safeTransfer(shineToken, _recipient, _amount);
+                } else if (contractBal > 0) {
+                    safeTransfer(shineToken, _recipient, contractBal);
+                } else if (airdropWallet != address(0)) {
+                    try shineToken.transferFrom(airdropWallet, _recipient, _amount) {} catch {}
+                }
+            } catch {}
         }
     }
 
     function setShineToken(address _shineToken) external {
         require(msg.sender == rootOwner, "Only owner");
         shineToken = IERC20(_shineToken);
+    }
+
+    function setUsdtToken(address _usdtToken) external {
+        require(msg.sender == rootOwner, "Only owner");
+        usdtToken = IERC20(_usdtToken);
     }
 
     function distributeFunds(uint256 _cost, address _user, uint8 _program, uint8 _level) internal {
@@ -226,31 +244,35 @@ contract ShineCore {
         uint256 up2Amt = (_cost * 3) / 100;
         uint256 up3Amt = (_cost * 2) / 100;
 
-        require(usdtToken.transfer(tradingVault, tradingAmt), "Transfer failed");
+        if (tradingVault != address(0)) {
+            safeTransfer(usdtToken, tradingVault, tradingAmt);
+        } else {
+            ownerAmt += tradingAmt;
+        }
 
         address up1 = users[_user].upline;
         address up2 = up1 != address(0) ? users[up1].upline : address(0);
         address up3 = up2 != address(0) ? users[up2].upline : address(0);
 
         if (up1 != address(0) && users[up1].activeLevels[_program][_level] && !users[up1].matrices[_program][_level].blocked) {
-            require(usdtToken.transfer(up1, up1Amt), "Transfer failed");
+            safeTransfer(usdtToken, up1, up1Amt);
         } else {
             ownerAmt += up1Amt;
         }
 
         if (up2 != address(0) && users[up2].activeLevels[_program][_level] && !users[up2].matrices[_program][_level].blocked) {
-            require(usdtToken.transfer(up2, up2Amt), "Transfer failed");
+            safeTransfer(usdtToken, up2, up2Amt);
         } else {
             ownerAmt += up2Amt;
         }
 
         if (up3 != address(0) && users[up3].activeLevels[_program][_level] && !users[up3].matrices[_program][_level].blocked) {
-            require(usdtToken.transfer(up3, up3Amt), "Transfer failed");
+            safeTransfer(usdtToken, up3, up3Amt);
         } else {
             ownerAmt += up3Amt;
         }
 
-        require(usdtToken.transfer(rootOwner, ownerAmt), "Transfer failed");
+        safeTransfer(usdtToken, rootOwner, ownerAmt);
 
         emit Distribution(_user, tradingAmt, ownerAmt, up1Amt, up2Amt, up3Amt);
     }
