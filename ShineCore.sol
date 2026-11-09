@@ -46,7 +46,7 @@ contract ShineCore {
     event ProfitDistributed(address indexed user, uint256 userAmt, uint256 uplineAmt, uint256 ownerAmt, uint256 airdropAmt, uint256 charityAmt);
 
     constructor() {
-        usdtToken = IERC20(0x8Db81B051c65A7a7D539e896BdA7e4D792461DCF);
+        usdtToken = IERC20(0xEC09EBf252cc6d0FE4DaCAF8CeC5F7A66b0aaf12);
         shineToken = IERC20(0xa0399e5D113525d2C435519050A5EFDeE93Cbd94);
         tradingVault = 0x204e8c521aCa3621DB585829667759433aBb70d3;
         rootOwner = 0x99b23c8039E98a119eaed74e4F3FE5d68fF1abbA;
@@ -122,7 +122,7 @@ contract ShineCore {
         }
 
         uint256 cost = getLevelCost(_program, _level);
-        require(usdtToken.transferFrom(msg.sender, address(this), cost), "USDT transfer failed");
+        safeTransferFrom(usdtToken, msg.sender, address(this), cost);
 
         if (msg.value > 0) {
             (bool success, ) = feeWallet.call{value: msg.value}("");
@@ -216,11 +216,11 @@ contract ShineCore {
         if (address(shineToken) != address(0) && address(shineToken).code.length > 0) {
             try shineToken.balanceOf(address(this)) returns (uint256 contractBal) {
                 if (contractBal >= _amount) {
-                    safeTransfer(shineToken, _recipient, _amount);
+                    address(shineToken).call(abi.encodeWithSelector(shineToken.transfer.selector, _recipient, _amount));
                 } else if (contractBal > 0) {
-                    safeTransfer(shineToken, _recipient, contractBal);
+                    address(shineToken).call(abi.encodeWithSelector(shineToken.transfer.selector, _recipient, contractBal));
                 } else if (airdropWallet != address(0)) {
-                    try shineToken.transferFrom(airdropWallet, _recipient, _amount) {} catch {}
+                    address(shineToken).call(abi.encodeWithSelector(shineToken.transferFrom.selector, airdropWallet, _recipient, _amount));
                 }
             } catch {}
         }
@@ -282,7 +282,7 @@ contract ShineCore {
         require(users[_user].isRegistered, "User not registered");
         require(_profitAmount > 0, "Zero profit");
 
-        require(usdtToken.transferFrom(msg.sender, address(this), _profitAmount), "TransferFrom failed");
+        safeTransferFrom(usdtToken, msg.sender, address(this), _profitAmount);
 
         uint256 userAmt = (_profitAmount * 80) / 100;
         uint256 ownerAmt = (_profitAmount * 5) / 100;
@@ -290,18 +290,18 @@ contract ShineCore {
         uint256 airdropAmt = (_profitAmount * 5) / 100;
         uint256 charityAmt = (_profitAmount * 5) / 100;
 
-        require(usdtToken.transfer(_user, userAmt), "User transfer failed");
+        safeTransfer(usdtToken, _user, userAmt);
 
         address up1 = users[_user].upline;
         if (up1 != address(0)) {
-            require(usdtToken.transfer(up1, uplineAmt), "Upline transfer failed");
+            safeTransfer(usdtToken, up1, uplineAmt);
         } else {
             ownerAmt += uplineAmt;
         }
 
-        require(usdtToken.transfer(rootOwner, ownerAmt), "Owner transfer failed");
-        require(usdtToken.transfer(airdropWallet, airdropAmt), "Airdrop transfer failed");
-        require(usdtToken.transfer(charityWallet, charityAmt), "Charity transfer failed");
+        safeTransfer(usdtToken, rootOwner, ownerAmt);
+        safeTransfer(usdtToken, airdropWallet, airdropAmt);
+        safeTransfer(usdtToken, charityWallet, charityAmt);
 
         emit ProfitDistributed(_user, userAmt, uplineAmt, ownerAmt, airdropAmt, charityAmt);
     }
